@@ -760,6 +760,7 @@ void EnKanban_Update(Actor* thisx, GlobalContext* globalCtx2) {
             }
         } break;
     }
+    this->floorRot.z += 0.5f * M_PI;
 }
 
 static Gfx* sDisplayLists[] = {
@@ -795,6 +796,7 @@ void EnKanban_Draw(Actor* thisx, GlobalContext* globalCtx) {
     func_80093D84(globalCtx->state.gfxCtx);
     gSPDisplayList(POLY_OPA_DISP++, object_kanban_DL_000C30);
     if (this->actionState != ENKANBAN_SIGN) {
+        printf("No Sign\n");
         Matrix_Translate(this->actor.world.pos.x, this->actor.world.pos.y, this->actor.world.pos.z, MTXMODE_NEW);
         Matrix_Scale(this->actor.scale.x, this->actor.scale.y, this->actor.scale.z, MTXMODE_APPLY);
         Matrix_RotateX(this->floorRot.x, MTXMODE_APPLY);
@@ -818,7 +820,8 @@ void EnKanban_Draw(Actor* thisx, GlobalContext* globalCtx) {
             }
         }
     } else {
-        Matrix_Translate(0.0f, 0.0f, -100.0f, MTXMODE_APPLY);
+        Matrix_Translate(-7000.0f, 10000.0f, -100.0f, MTXMODE_APPLY);
+        Matrix_RotateZ(this->floorRot.z, MTXMODE_APPLY);
         gSPMatrix(POLY_OPA_DISP++, MATRIX_NEWMTX(globalCtx->state.gfxCtx),
                   G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
         if (this->partFlags == 0xFFFF) {
