@@ -5,45 +5,49 @@
 #include <filesystem>
 #include <fstream>
 
-#include <libultraship/ResourceMgr.h>
-#include <libultraship/DisplayList.h>
-#include <libultraship/PlayerAnimation.h>
-#include <libultraship/Skeleton.h>
-#include <libultraship/Window.h>
-#include <libultraship/GameVersions.h>
+#include <ResourceMgr.h>
+#include <DisplayList.h>
+#include <PlayerAnimation.h>
+#include <Skeleton.h>
+#include <Window.h>
+#include <GameVersions.h>
 
 #include "z64animation.h"
 #include "z64bgcheck.h"
 #include "Enhancements/gameconsole.h"
 #include <ultra64/gbi.h>
-#include <libultraship/Animation.h>
+#include <Animation.h>
 #ifdef _WIN32
 #include <Windows.h>
 #else
 #include <time.h>
 #endif
-#include <libultraship/CollisionHeader.h>
-#include <libultraship/Array.h>
-#include <libultraship/Cutscene.h>
+#include <CollisionHeader.h>
+#include <Array.h>
+#include <Cutscene.h>
 #include <stb/stb_image.h>
 #define DRMP3_IMPLEMENTATION
 #include <dr_libs/mp3.h>
 #define DRWAV_IMPLEMENTATION
 #include <dr_libs/wav.h>
-#include <libultraship/AudioPlayer.h>
+#include <AudioPlayer.h>
 #include "Enhancements/controls/GameControlEditor.h"
 #include "Enhancements/cosmetics/CosmeticsEditor.h"
+#include "Enhancements/sfx-editor/SfxEditor.h"
 #include "Enhancements/debugconsole.h"
 #include "Enhancements/debugger/debugger.h"
 #include "Enhancements/randomizer/randomizer.h"
+#include "Enhancements/randomizer/randomizer_entrance_tracker.h"
 #include "Enhancements/randomizer/randomizer_item_tracker.h"
+#include "Enhancements/randomizer/randomizer_check_tracker.h"
 #include "Enhancements/randomizer/3drando/random.hpp"
+#include "Enhancements/gameplaystats.h"
 #include "Enhancements/n64_weird_frame_data.inc"
 #include "frame_interpolation.h"
 #include "variables.h"
 #include "macros.h"
 #include <Utils/StringHelper.h>
-#include <libultraship/Hooks.h>
+#include <Hooks.h>
 #include "Enhancements/custom-message/CustomMessageManager.h"
 
 #include <Fast3D/gfx_pc.h>
@@ -56,12 +60,14 @@
 #endif
 
 #ifdef __SWITCH__
-#include <libultraship/SwitchImpl.h>
+#include <port/switch/SwitchImpl.h>
 #elif defined(__WIIU__)
-#include <libultraship/WiiUImpl.h>
+#include <port/wiiu/WiiUImpl.h>
 #endif
 
-#include <libultraship/Audio.h>
+
+
+#include <Audio.h>
 #include "Enhancements/custom-message/CustomMessageTypes.h"
 #include <functions.h>
 #include "Enhancements/item-tables/ItemTableManager.h"
@@ -170,6 +176,10 @@ bool OTRGlobals::HasMasterQuest() {
 
 bool OTRGlobals::HasOriginal() {
     return hasOriginal;
+}
+
+std::shared_ptr<std::vector<std::string>> OTRGlobals::ListFiles(std::string path) {
+    return context->GetResourceManager()->ListFiles(path);
 }
 
 struct ExtensionEntry {
@@ -424,37 +434,41 @@ extern "C" void InitOTR() {
     SaveManager::Instance = new SaveManager();
     CustomMessageManager::Instance = new CustomMessageManager();
     ItemTableManager::Instance = new ItemTableManager();
-    auto t = OTRGlobals::Instance->context->GetResourceManager()->LoadFile("version");
-
-    if (!t->bHasLoadError)
-    {
-        Ship::BinaryReader reader(t->buffer.get(), t->dwBufferSize);
-        Ship::Endianness endianness = (Ship::Endianness)reader.ReadUByte();
-        reader.SetEndianness(endianness);
-        uint32_t gameVersion = reader.ReadUInt32();
-        OTRGlobals::Instance->context->GetResourceManager()->SetGameVersion(gameVersion);
-    }
 
     clearMtx = (uintptr_t)&gMtxClear;
     OTRMessage_Init();
     OTRAudio_Init();
     InitCosmeticsEditor();
     GameControlEditor::Init();
+    InitSfxEditor();
     DebugConsole_Init();
     Debug_Init();
     Rando_Init();
     InitItemTracker();
+    InitEntranceTracker();
+    InitStatTracker();
+    CheckTracker::InitCheckTracker();
     OTRExtScanner();
     VanillaItemTable_Init();
 
+    time_t now = time(NULL);
+    tm *tm_now = localtime(&now);
+    if (tm_now->tm_mon == 11 && tm_now->tm_mday >= 24 && tm_now->tm_mday <= 25) {
+        CVar_RegisterS32("gLetItSnow", 1);
+    } else {
+        CVar_Clear("gLetItSnow");
+    }
 #ifdef ENABLE_CROWD_CONTROL
     CrowdControl::Instance = new CrowdControl();
-    CrowdControl::Instance->InitCrowdControl();
+    CrowdControl::Instance->Init();
 #endif
 }
 
 extern "C" void DeinitOTR() {
     OTRAudio_Exit();
+#ifdef ENABLE_CROWD_CONTROL
+    CrowdControl::Instance->Shutdown();
+#endif
 }
 
 #ifdef _WIN32
@@ -634,9 +648,12 @@ extern "C" uint16_t OTRGetPixelDepth(float x, float y) {
     return OTRGlobals::Instance->context->GetPixelDepth(x, y);
 }
 
-extern "C" uint32_t ResourceMgr_GetGameVersion()
-{
-    return OTRGlobals::Instance->context->GetResourceManager()->GetGameVersion();
+extern "C" uint32_t ResourceMgr_GetNumGameVersions() {
+    return OTRGlobals::Instance->context->GetResourceManager()->GetGameVersions().size();
+}
+
+extern "C" uint32_t ResourceMgr_GetGameVersion(int index) {
+    return OTRGlobals::Instance->context->GetResourceManager()->GetGameVersions()[index];
 }
 
 uint32_t IsSceneMasterQuest(s16 sceneNum) {
@@ -650,7 +667,7 @@ uint32_t IsSceneMasterQuest(s16 sceneNum) {
             value = 0;
             if (gSaveContext.n64ddFlag) {
                 if (!OTRGlobals::Instance->gRandomizer->masterQuestDungeons.empty()) {
-                    if (gGlobalCtx != NULL && OTRGlobals::Instance->gRandomizer->masterQuestDungeons.contains(sceneNum)) {
+                    if (gPlayState != NULL && OTRGlobals::Instance->gRandomizer->masterQuestDungeons.contains(sceneNum)) {
                         value = 1;
                     }
                 }
@@ -661,7 +678,7 @@ uint32_t IsSceneMasterQuest(s16 sceneNum) {
 }
 
 uint32_t IsGameMasterQuest() {
-    return gGlobalCtx != NULL ? IsSceneMasterQuest(gGlobalCtx->sceneNum) : 0;
+    return gPlayState != NULL ? IsSceneMasterQuest(gPlayState->sceneNum) : 0;
 }
 
 extern "C" uint32_t ResourceMgr_GameHasMasterQuest() {
@@ -707,23 +724,33 @@ extern "C" char** ResourceMgr_ListFiles(const char* searchMask, int* resultSize)
     return result;
 }
 
-extern "C" void ResourceMgr_LoadFile(const char* resName) {
-    OTRGlobals::Instance->context->GetResourceManager()->LoadResource(resName);
-}
-
-std::shared_ptr<Ship::Resource> ResourceMgr_LoadResource(const char* path) {
+std::string GetName(const char* path) {
     std::string Path = path;
-    if (ResourceMgr_IsGameMasterQuest()) {
+    if (IsGameMasterQuest()) {
         size_t pos = 0;
         if ((pos = Path.find("/nonmq/", 0)) != std::string::npos) {
             Path.replace(pos, 7, "/mq/");
         }
     }
-    return OTRGlobals::Instance->context->GetResourceManager()->LoadResource(Path.c_str());
+    return Path;
+}
+
+extern "C" const char* ResourceMgr_GetName(const char* path) {
+    auto s = new std::string(GetName(path));
+    const char* name = s->c_str();
+    return name;
+}
+
+extern "C" void ResourceMgr_LoadFile(const char* resName) {
+    OTRGlobals::Instance->context->GetResourceManager()->LoadResource(resName);
+}
+
+std::shared_ptr<Ship::Resource> ResourceMgr_LoadResource(const char* path) {
+    return OTRGlobals::Instance->context->GetResourceManager()->LoadResource(ResourceMgr_GetName(path));
 }
 
 extern "C" char* ResourceMgr_LoadFileRaw(const char* resName) {
-    return OTRGlobals::Instance->context->GetResourceManager()->LoadFile(resName)->buffer.get();
+    return OTRGlobals::Instance->context->GetResourceManager()->LoadFile(resName)->Buffer.get();
 }
 
 extern "C" char* ResourceMgr_LoadFileFromDisk(const char* filePath) {
@@ -789,19 +816,12 @@ extern "C" uint32_t ResourceMgr_LoadTexSizeByName(const char* texPath);
 extern "C" char* ResourceMgr_LoadTexOrDListByName(const char* filePath) {
     auto res = ResourceMgr_LoadResource(filePath);
 
-    if (res->resType == Ship::ResourceType::DisplayList)
+    if (res->ResType == Ship::ResourceType::DisplayList)
         return (char*)&((std::static_pointer_cast<Ship::DisplayList>(res))->instructions[0]);
-    else if (res->resType == Ship::ResourceType::Array)
+    else if (res->ResType == Ship::ResourceType::Array)
         return (char*)(std::static_pointer_cast<Ship::Array>(res))->vertices.data();
     else {
-        std::string Path = filePath;
-        if (ResourceMgr_IsGameMasterQuest()) {
-            size_t pos = 0;
-            if ((pos = Path.find("/nonmq/", 0)) != std::string::npos) {
-                Path.replace(pos, 7, "/mq/");
-            }
-        }
-        return ResourceMgr_LoadTexByName(Path.c_str());
+        return ResourceMgr_LoadTexByName(ResourceMgr_GetName(filePath));
     }
 }
 
@@ -881,8 +901,8 @@ extern "C" char* ResourceMgr_LoadArrayByName(const char* path)
 extern "C" char* ResourceMgr_LoadArrayByNameAsVec3s(const char* path) {
     auto res = std::static_pointer_cast<Ship::Array>(ResourceMgr_LoadResource(path));
 
-    if (res->cachedGameAsset != nullptr)
-        return (char*)res->cachedGameAsset;
+    if (res->CachedGameAsset != nullptr)
+        return (char*)res->CachedGameAsset;
     else
     {
         Vec3s* data = (Vec3s*)malloc(sizeof(Vec3s) * res->scalars.size());
@@ -893,7 +913,7 @@ extern "C" char* ResourceMgr_LoadArrayByNameAsVec3s(const char* path) {
             data[(i / 3)].z = res->scalars[i + 2].s16;
         }
 
-        res->cachedGameAsset = data;
+        res->CachedGameAsset = data;
 
         return (char*)data;
     }
@@ -903,8 +923,8 @@ extern "C" CollisionHeader* ResourceMgr_LoadColByName(const char* path)
 {
     auto colRes = std::static_pointer_cast<Ship::CollisionHeader>(ResourceMgr_LoadResource(path));
 
-    if (colRes->cachedGameAsset != nullptr)
-        return (CollisionHeader*)colRes->cachedGameAsset;
+    if (colRes->CachedGameAsset != nullptr)
+        return (CollisionHeader*)colRes->CachedGameAsset;
 
     CollisionHeader* colHeader = (CollisionHeader*)malloc(sizeof(CollisionHeader));
 
@@ -988,7 +1008,7 @@ extern "C" CollisionHeader* ResourceMgr_LoadColByName(const char* path)
         colHeader->waterBoxes[i].properties = colRes->waterBoxes[i].properties;
     }
 
-    colRes->cachedGameAsset = colHeader;
+    colRes->CachedGameAsset = colHeader;
 
     return (CollisionHeader*)colHeader;
 }
@@ -1029,7 +1049,7 @@ extern "C" SoundFontSample* ReadCustomSample(const char* path) {
     ExtensionEntry entry = ExtensionCache[path];
 
     auto sampleRaw = OTRGlobals::Instance->context->GetResourceManager()->LoadFile(entry.path);
-    uint32_t* strem = (uint32_t*)sampleRaw->buffer.get();
+    uint32_t* strem = (uint32_t*)sampleRaw->Buffer.get();
     uint8_t* strem2 = (uint8_t*)strem;
 
     SoundFontSample* sampleC = new SoundFontSample;
@@ -1039,7 +1059,7 @@ extern "C" SoundFontSample* ReadCustomSample(const char* path) {
         drwav_uint32 sampleRate;
         drwav_uint64 totalPcm;
         drmp3_int16* pcmData =
-            drwav_open_memory_and_read_pcm_frames_s16(strem2, sampleRaw->dwBufferSize, &channels, &sampleRate, &totalPcm, NULL);
+            drwav_open_memory_and_read_pcm_frames_s16(strem2, sampleRaw->BufferSize, &channels, &sampleRate, &totalPcm, NULL);
         sampleC->size = totalPcm;
         sampleC->sampleAddr = (uint8_t*)pcmData;
         sampleC->codec = CODEC_S16;
@@ -1057,7 +1077,7 @@ extern "C" SoundFontSample* ReadCustomSample(const char* path) {
         drmp3_config mp3Info;
         drmp3_uint64 totalPcm;
         drmp3_int16* pcmData =
-            drmp3_open_memory_and_read_pcm_frames_s16(strem2, sampleRaw->dwBufferSize, &mp3Info, &totalPcm, NULL);
+            drmp3_open_memory_and_read_pcm_frames_s16(strem2, sampleRaw->BufferSize, &mp3Info, &totalPcm, NULL);
 
         sampleC->size = totalPcm * mp3Info.channels * sizeof(short);
         sampleC->sampleAddr = (uint8_t*)pcmData;
@@ -1095,10 +1115,10 @@ extern "C" SoundFontSample* ResourceMgr_LoadAudioSample(const char* path)
     if (sample == nullptr)
         return NULL;
 
-    if (sample->cachedGameAsset != nullptr)
+    if (sample->CachedGameAsset != nullptr)
     {
-        SoundFontSample* sampleC = (SoundFontSample*)sample->cachedGameAsset;
-        return (SoundFontSample*)sample->cachedGameAsset;
+        SoundFontSample* sampleC = (SoundFontSample*)sample->CachedGameAsset;
+        return (SoundFontSample*)sample->CachedGameAsset;
     }
     else
     {
@@ -1130,7 +1150,7 @@ extern "C" SoundFontSample* ResourceMgr_LoadAudioSample(const char* path)
         for (size_t i = 0; i < sample->loop.states.size(); i++)
             sampleC->loop->state[i] = sample->loop.states[i];
 
-        sample->cachedGameAsset = sampleC;
+        sample->CachedGameAsset = sampleC;
         return sampleC;
     }
 }
@@ -1141,9 +1161,9 @@ extern "C" SoundFont* ResourceMgr_LoadAudioSoundFont(const char* path) {
     if (soundFont == nullptr)
         return NULL;
 
-    if (soundFont->cachedGameAsset != nullptr)
+    if (soundFont->CachedGameAsset != nullptr)
     {
-        return (SoundFont*)soundFont->cachedGameAsset;
+        return (SoundFont*)soundFont->CachedGameAsset;
     }
     else
     {
@@ -1255,7 +1275,7 @@ extern "C" SoundFont* ResourceMgr_LoadAudioSoundFont(const char* path) {
             soundFontC->soundEffects[i].tuning = soundFont->soundEffects[i]->tuning;
         }
 
-        soundFont->cachedGameAsset = soundFontC;
+        soundFont->CachedGameAsset = soundFontC;
         return soundFontC;
     }
 }
@@ -1281,8 +1301,8 @@ extern "C" int ResourceMgr_OTRSigCheck(char* imgData)
 extern "C" AnimationHeaderCommon* ResourceMgr_LoadAnimByName(const char* path) {
     auto res = std::static_pointer_cast<Ship::Animation>(ResourceMgr_LoadResource(path));
 
-    if (res->cachedGameAsset != nullptr)
-        return (AnimationHeaderCommon*)res->cachedGameAsset;
+    if (res->CachedGameAsset != nullptr)
+        return (AnimationHeaderCommon*)res->CachedGameAsset;
 
     AnimationHeaderCommon* anim = nullptr;
 
@@ -1341,7 +1361,7 @@ extern "C" AnimationHeaderCommon* ResourceMgr_LoadAnimByName(const char* path) {
         anim = (AnimationHeaderCommon*)animLink;
     }
 
-    res->cachedGameAsset = anim;
+    res->CachedGameAsset = anim;
 
     return anim;
 }
@@ -1349,8 +1369,8 @@ extern "C" AnimationHeaderCommon* ResourceMgr_LoadAnimByName(const char* path) {
 extern "C" SkeletonHeader* ResourceMgr_LoadSkeletonByName(const char* path) {
     auto res = std::static_pointer_cast<Ship::Skeleton>(ResourceMgr_LoadResource(path));
 
-    if (res->cachedGameAsset != nullptr)
-        return (SkeletonHeader*)res->cachedGameAsset;
+    if (res->CachedGameAsset != nullptr)
+        return (SkeletonHeader*)res->CachedGameAsset;
 
     SkeletonHeader* baseHeader = nullptr;
 
@@ -1527,7 +1547,7 @@ extern "C" SkeletonHeader* ResourceMgr_LoadSkeletonByName(const char* path) {
         }
     }
 
-    res->cachedGameAsset = baseHeader;
+    res->CachedGameAsset = baseHeader;
 
     return baseHeader;
 }
@@ -1832,6 +1852,10 @@ extern "C" bool Randomizer_IsTrialRequired(RandomizerInf trial) {
     return OTRGlobals::Instance->gRandomizer->IsTrialRequired(trial);
 }
 
+extern "C" void Randomizer_LoadEntranceOverrides(const char* spoilerFileName, bool silent) {
+    OTRGlobals::Instance->gRandomizer->LoadEntranceOverrides(spoilerFileName, silent);
+}
+
 extern "C" u32 SpoilerFileExists(const char* spoilerFileName) {
     return OTRGlobals::Instance->gRandomizer->SpoilerFileExists(spoilerFileName);
 }
@@ -1896,8 +1920,8 @@ extern "C" CustomMessageEntry Randomizer_GetCustomGetItemMessage(Player* player)
     return getItemText;
 }
 
-extern "C" int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx) {
-    MessageContext* msgCtx = &globalCtx->msgCtx;
+extern "C" int CustomMessage_RetrieveIfExists(PlayState* play) {
+    MessageContext* msgCtx = &play->msgCtx;
     uint16_t textId = msgCtx->textId;
     Font* font = &msgCtx->font;
     char* buffer = font->msgBuf;
@@ -1905,39 +1929,44 @@ extern "C" int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx) {
     CustomMessageEntry messageEntry;
     if (gSaveContext.n64ddFlag) {
         if (textId == TEXT_RANDOMIZER_CUSTOM_ITEM) {
-            Player* player = GET_PLAYER(globalCtx);
+            Player* player = GET_PLAYER(play);
             if (player->getItemEntry.getItemId == RG_ICE_TRAP) {
                 u16 iceTrapTextId = Random(0, NUM_ICE_TRAP_MESSAGES);
                 messageEntry = CustomMessageManager::Instance->RetrieveMessage(Randomizer::IceTrapRandoMessageTableID, iceTrapTextId);
+                if (CVar_GetS32("gLetItSnow", 0)) {
+                    messageEntry = CustomMessageManager::Instance->RetrieveMessage(Randomizer::IceTrapRandoMessageTableID, NUM_ICE_TRAP_MESSAGES + 1);
+                }
+            } else if (player->getItemEntry.getItemId >= RG_DEKU_TREE_MAP && player->getItemEntry.getItemId <= RG_ICE_CAVERN_MAP) {
+                messageEntry = OTRGlobals::Instance->gRandomizer->GetMapGetItemMessageWithHint(player->getItemEntry);
             } else {
                 messageEntry = Randomizer_GetCustomGetItemMessage(player);
             }
-        } else if (textId == TEXT_RANDOMIZER_GOSSIP_STONE_HINTS && Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) != 0 &&
-            (Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) == 1 ||
-             (Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) == 2 &&
-              Player_GetMask(globalCtx) == PLAYER_MASK_TRUTH) ||
-             (Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) == 3 && CHECK_QUEST_ITEM(QUEST_STONE_OF_AGONY)))) {
+        } else if (textId == TEXT_RANDOMIZER_GOSSIP_STONE_HINTS && Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) != RO_GOSSIP_STONES_NONE &&
+            (Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) == RO_GOSSIP_STONES_NEED_NOTHING ||
+             (Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) == RO_GOSSIP_STONES_NEED_TRUTH &&
+              Player_GetMask(play) == PLAYER_MASK_TRUTH) ||
+             (Randomizer_GetSettingValue(RSK_GOSSIP_STONE_HINTS) == RO_GOSSIP_STONES_NEED_STONE && CHECK_QUEST_ITEM(QUEST_STONE_OF_AGONY)))) {
 
             s16 actorParams = msgCtx->talkActor->params;
 
             // if we're in a generic grotto
-            if (globalCtx->sceneNum == 62 && actorParams == 14360) {
+            if (play->sceneNum == 62 && actorParams == 14360) {
                 // look for the chest in the actorlist to determine
                 // which grotto we're in
                 int numOfActorLists =
-                    sizeof(globalCtx->actorCtx.actorLists) / sizeof(globalCtx->actorCtx.actorLists[0]);
+                    sizeof(play->actorCtx.actorLists) / sizeof(play->actorCtx.actorLists[0]);
                 for (int i = 0; i < numOfActorLists; i++) {
-                    if (globalCtx->actorCtx.actorLists[i].length) {
-                        if (globalCtx->actorCtx.actorLists[i].head->id == 10) {
+                    if (play->actorCtx.actorLists[i].length) {
+                        if (play->actorCtx.actorLists[i].head->id == 10) {
                             // set the params for the hint check to be negative chest params
-                            actorParams = 0 - globalCtx->actorCtx.actorLists[i].head->params;
+                            actorParams = 0 - play->actorCtx.actorLists[i].head->params;
                         }
                     }
                 }
             }
 
             RandomizerCheck hintCheck =
-                Randomizer_GetCheckFromActor(msgCtx->talkActor->id, globalCtx->sceneNum, actorParams);
+                Randomizer_GetCheckFromActor(msgCtx->talkActor->id, play->sceneNum, actorParams);
 
             messageEntry = CustomMessageManager::Instance->RetrieveMessage(Randomizer::hintMessageTableID, hintCheck);
         } else if (textId == TEXT_ALTAR_CHILD || textId == TEXT_ALTAR_ADULT) {
@@ -1954,7 +1983,7 @@ extern "C" int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx) {
         // textId: TEXT_SCRUB_RANDOM + (randomizerInf - RAND_INF_SCRUBS_PURCHASED_DODONGOS_CAVERN_DEKU_SCRUB_NEAR_BOMB_BAG_LEFT)
         } else if (textId >= TEXT_SCRUB_RANDOM && textId <= TEXT_SCRUB_RANDOM + NUM_SCRUBS) {
             RandomizerInf randoInf = (RandomizerInf)((textId - TEXT_SCRUB_RANDOM) + RAND_INF_SCRUBS_PURCHASED_DODONGOS_CAVERN_DEKU_SCRUB_NEAR_BOMB_BAG_LEFT);
-            messageEntry = OTRGlobals::Instance->gRandomizer->GetMerchantMessage(randoInf, TEXT_SCRUB_RANDOM, Player_GetMask(globalCtx) != PLAYER_MASK_TRUTH);
+            messageEntry = OTRGlobals::Instance->gRandomizer->GetMerchantMessage(randoInf, TEXT_SCRUB_RANDOM, Player_GetMask(play) != PLAYER_MASK_TRUTH);
         // Shop items each have two message entries, second one offset by NUM_SHOP_ITEMS
         // textId: TEXT_SHOP_ITEM_RANDOM + (randomizerInf - RAND_INF_SHOP_ITEMS_KF_SHOP_ITEM_1)
         // textId: TEXT_SHOP_ITEM_RANDOM + ((randomizerInf - RAND_INF_SHOP_ITEMS_KF_SHOP_ITEM_1) + NUM_SHOP_ITEMS)
@@ -1976,13 +2005,23 @@ extern "C" int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx) {
             messageEntry = CustomMessageManager::Instance->RetrieveMessage(Randomizer::NaviRandoMessageTableID, naviTextId);
         } else if (Randomizer_GetSettingValue(RSK_SHUFFLE_MAGIC_BEANS) && textId == TEXT_BEAN_SALESMAN) {
             messageEntry = CustomMessageManager::Instance->RetrieveMessage(Randomizer::merchantMessageTableID, TEXT_BEAN_SALESMAN);
+        } else if (Randomizer_GetSettingValue(RSK_SHUFFLE_MERCHANTS) != RO_SHUFFLE_MERCHANTS_OFF && (textId == TEXT_MEDIGORON || 
+          (textId == TEXT_CARPET_SALESMAN_1 && !Flags_GetRandomizerInf(RAND_INF_MERCHANTS_CARPET_SALESMAN)) ||
+          (textId == TEXT_CARPET_SALESMAN_2 && !Flags_GetRandomizerInf(RAND_INF_MERCHANTS_CARPET_SALESMAN)))) {
+            RandomizerInf randoInf = (RandomizerInf)(textId == TEXT_MEDIGORON ? RAND_INF_MERCHANTS_MEDIGORON : RAND_INF_MERCHANTS_CARPET_SALESMAN);
+            messageEntry = OTRGlobals::Instance->gRandomizer->GetMerchantMessage(randoInf, textId, Randomizer_GetSettingValue(RSK_SHUFFLE_MERCHANTS) != RO_SHUFFLE_MERCHANTS_ON_HINT);            
         } else if (Randomizer_GetSettingValue(RSK_BOMBCHUS_IN_LOGIC) &&
                    (textId == TEXT_BUY_BOMBCHU_10_DESC || textId == TEXT_BUY_BOMBCHU_10_PROMPT)) {
             messageEntry = CustomMessageManager::Instance->RetrieveMessage(customMessageTableID, textId);
+        } else if (Randomizer_GetSettingValue(RSK_SHUFFLE_WARP_SONGS) &&
+                   (textId >= TEXT_WARP_MINUET_OF_FOREST && textId <= TEXT_WARP_PRELUDE_OF_LIGHT)) {
+            messageEntry = OTRGlobals::Instance->gRandomizer->GetWarpSongMessage(textId, false);
+        } else if (textId == TEXT_LAKE_HYLIA_WATER_SWITCH_NAVI || textId == TEXT_LAKE_HYLIA_WATER_SWITCH_SIGN) {
+            messageEntry = CustomMessageManager::Instance->RetrieveMessage(Randomizer::hintMessageTableID, textId);
         }
     }
     if (textId == TEXT_GS_NO_FREEZE || textId == TEXT_GS_FREEZE) {
-        if (CVar_GetS32("gInjectSkulltulaCount", 0) != 0) {
+        if (CVar_GetS32("gInjectItemCounts", 0) != 0) {
             // The freeze text cannot be manually dismissed and must be auto-dismissed.
             // This is fine and even wanted when skull tokens are not shuffled, but when
             // when they are shuffled we don't want to be able to manually dismiss the box.
@@ -1991,7 +2030,7 @@ extern "C" int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx) {
             // RANDOTODO: Implement a way to determine if an item came from a skulltula and
             // inject the auto-dismiss control code if it did.
             if (CVar_GetS32("gSkulltulaFreeze", 0) != 0 &&
-                !(gSaveContext.n64ddFlag && Randomizer_GetSettingValue(RSK_SHUFFLE_TOKENS) > 0)) {
+                !(gSaveContext.n64ddFlag && Randomizer_GetSettingValue(RSK_SHUFFLE_TOKENS) != RO_TOKENSANITY_OFF)) {
                 textId = TEXT_GS_NO_FREEZE;
             } else {
                 textId = TEXT_GS_FREEZE;
@@ -1999,6 +2038,17 @@ extern "C" int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx) {
             messageEntry = CustomMessageManager::Instance->RetrieveMessage(customMessageTableID, textId);
             CustomMessageManager::ReplaceStringInMessage(messageEntry, "{{gsCount}}", std::to_string(gSaveContext.inventory.gsTokens + 1));
         }
+    }
+    if (textId == TEXT_HEART_CONTAINER && CVar_GetS32("gInjectItemCounts", 0)) {
+        messageEntry = CustomMessageManager::Instance->RetrieveMessage(customMessageTableID, TEXT_HEART_CONTAINER);
+        CustomMessageManager::ReplaceStringInMessage(messageEntry, "{{heartContainerCount}}", std::to_string(gSaveContext.sohStats.heartContainers + 1));
+    }
+    if (textId == TEXT_HEART_PIECE && CVar_GetS32("gInjectItemCounts", 0)) {
+        messageEntry = CustomMessageManager::Instance->RetrieveMessage(customMessageTableID, TEXT_HEART_PIECE);
+        CustomMessageManager::ReplaceStringInMessage(messageEntry, "{{heartPieceCount}}", std::to_string(gSaveContext.sohStats.heartPieces + 1));
+    }
+    if (textId == TEXT_MARKET_GUARD_NIGHT && CVar_GetS32("gMarketSneak", 0) && play->sceneNum == SCENE_ENTRA_N) {
+        messageEntry = CustomMessageManager::Instance->RetrieveMessage(customMessageTableID, TEXT_MARKET_GUARD_NIGHT);
     }
     if (messageEntry.textBoxType != -1) {
         font->charTexBuf[0] = (messageEntry.textBoxType << 4) | messageEntry.textBoxPos;
@@ -2020,4 +2070,20 @@ extern "C" int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx) {
 
 extern "C" void Overlay_DisplayText(float duration, const char* text) {
     SohImGui::GetGameOverlay()->TextDrawNotification(duration, true, text);
+}
+
+extern "C" void Entrance_ClearEntranceTrackingData(void) {
+    ClearEntranceTrackingData();
+}
+
+extern "C" void Entrance_InitEntranceTrackingData(void) {
+    InitEntranceTrackingData();
+}
+
+extern "C" void EntranceTracker_SetCurrentGrottoID(s16 entranceIndex) {
+    SetCurrentGrottoIDForTracker(entranceIndex);
+}
+
+extern "C" void EntranceTracker_SetLastEntranceOverride(s16 entranceIndex) {
+    SetLastEntranceOverrideForTracker(entranceIndex);
 }

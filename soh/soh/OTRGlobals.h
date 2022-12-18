@@ -7,9 +7,10 @@
 #include <soh/Enhancements/item-tables/ItemTableTypes.h>
 
 #ifdef __cplusplus
-#include <libultraship/Window.h>
+#include <Window.h>
 #include "Enhancements/savestates.h"
 #include "Enhancements/randomizer/randomizer.h"
+#include <vector>
 
 const std::string customMessageTableID = "BaseGameOverrides";
 
@@ -27,6 +28,7 @@ public:
 
     bool HasMasterQuest();
     bool HasOriginal();
+    std::shared_ptr<std::vector<std::string>> ListFiles(std::string path);
 
 private:
 	void CheckSaveFile(size_t sramSize) const;
@@ -35,6 +37,7 @@ private:
 };
 
 uint32_t IsGameMasterQuest();
+std::string GetName(const char* path);
 #endif
 
 #ifndef __cplusplus
@@ -53,9 +56,11 @@ int32_t OTRGetLastScancode();
 uint32_t ResourceMgr_IsGameMasterQuest();
 uint32_t ResourceMgr_GameHasMasterQuest();
 uint32_t ResourceMgr_GameHasOriginal();
-uint32_t ResourceMgr_GetGameVersion();
+uint32_t ResourceMgr_GetNumGameVersions();
+uint32_t ResourceMgr_GetGameVersion(int index);
 void ResourceMgr_CacheDirectory(const char* resName);
 char** ResourceMgr_ListFiles(const char* searchMask, int* resultSize);
+const char* ResourceMgr_GetName(const char* path);
 void ResourceMgr_LoadFile(const char* resName);
 char* ResourceMgr_LoadFileFromDisk(const char* filePath);
 char* ResourceMgr_LoadJPEG(char* data, int dataSize);
@@ -120,16 +125,21 @@ void Randomizer_LoadMerchantMessages(const char* spoilerFileName);
 void Randomizer_LoadRequiredTrials(const char* spoilerFileName);
 void Randomizer_LoadMasterQuestDungeons(const char* spoilerFileName);
 void Randomizer_LoadItemLocations(const char* spoilerFileName, bool silent);
+void Randomizer_LoadEntranceOverrides(const char* spoilerFileName, bool silent);
 bool Randomizer_IsTrialRequired(RandomizerInf trial);
 GetItemEntry Randomizer_GetItemFromActor(s16 actorId, s16 sceneNum, s16 actorParams, GetItemID ogId);
 GetItemEntry Randomizer_GetItemFromActorWithoutObtainabilityCheck(s16 actorId, s16 sceneNum, s16 actorParams, GetItemID ogId);
 GetItemEntry Randomizer_GetItemFromKnownCheck(RandomizerCheck randomizerCheck, GetItemID ogId);
 GetItemEntry Randomizer_GetItemFromKnownCheckWithoutObtainabilityCheck(RandomizerCheck randomizerCheck, GetItemID ogId);
 ItemObtainability Randomizer_GetItemObtainabilityFromRandomizerCheck(RandomizerCheck randomizerCheck);
-int CustomMessage_RetrieveIfExists(GlobalContext* globalCtx);
+int CustomMessage_RetrieveIfExists(PlayState* play);
 void Overlay_DisplayText(float duration, const char* text);
 GetItemEntry ItemTable_Retrieve(int16_t getItemID);
 GetItemEntry ItemTable_RetrieveEntry(s16 modIndex, s16 getItemID);
+void Entrance_ClearEntranceTrackingData(void);
+void Entrance_InitEntranceTrackingData(void);
+void EntranceTracker_SetCurrentGrottoID(s16 entranceIndex);
+void EntranceTracker_SetLastEntranceOverride(s16 entranceIndex);
 #endif
 
 #endif
