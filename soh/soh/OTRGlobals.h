@@ -37,7 +37,6 @@ private:
 };
 
 uint32_t IsGameMasterQuest();
-std::string GetName(const char* path);
 #endif
 
 #ifndef __cplusplus
@@ -60,7 +59,6 @@ uint32_t ResourceMgr_GetNumGameVersions();
 uint32_t ResourceMgr_GetGameVersion(int index);
 void ResourceMgr_CacheDirectory(const char* resName);
 char** ResourceMgr_ListFiles(const char* searchMask, int* resultSize);
-const char* ResourceMgr_GetName(const char* path);
 void ResourceMgr_LoadFile(const char* resName);
 char* ResourceMgr_LoadFileFromDisk(const char* filePath);
 char* ResourceMgr_LoadJPEG(char* data, int dataSize);
@@ -106,7 +104,7 @@ int AudioPlayer_Buffered(void);
 int AudioPlayer_GetDesiredBuffered(void);
 void AudioPlayer_Play(const uint8_t* buf, uint32_t len);
 void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples);
-int Controller_ShouldRumble(size_t i);
+int Controller_ShouldRumble(size_t slot);
 void Controller_BlockGameInput();
 void Controller_UnblockGameInput();
 void Hooks_ExecuteAudioInit();

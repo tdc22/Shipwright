@@ -181,6 +181,28 @@ std::map<u16, std::tuple<std::string, std::string, SeqType>> sfxEditorSequenceMa
     {NA_SE_EV_CHICKEN_CRY_A,       {"Chicken Cry",                         "NA_SE_EV_CHICKEN_CRY_A",         SEQ_SFX}},
 };
 
+// Grabs the current BGM sequence ID and replays it
+// which will lookup the proper override, or reset back to vanilla
+void ReplayCurrentBGM() {
+    u16 curSeqId = func_800FA0B4(SEQ_PLAYER_BGM_MAIN);
+    // TODO: replace with Audio_StartSeq when the macro is shared
+    // The fade time and audio player flags will always be 0 in the case of replaying the BGM, so they are not set here
+    Audio_QueueSeqCmd(0x00000000 | curSeqId);
+}
+
+// Attempt to update the BGM if it matches the current sequence that is being played
+// The seqKey that is passed in should be the vanilla ID, not the override ID
+void UpdateCurrentBGM(u16 seqKey, SeqType seqType) {
+    if (seqType != SEQ_BGM_WORLD) {
+        return;
+    }
+
+    u16 curSeqId = func_800FA0B4(SEQ_PLAYER_BGM_MAIN);
+    if (curSeqId == seqKey) {
+        ReplayCurrentBGM();
+    }
+}
+
 void Draw_SfxTab(const std::string& tabId, const std::map<u16, std::tuple<std::string, std::string, SeqType>>& map, SeqType type) {
     const std::string hiddenTabId = "##" + tabId;
     const std::string resetAllButton = "Reset All" + hiddenTabId;
@@ -189,11 +211,18 @@ void Draw_SfxTab(const std::string& tabId, const std::map<u16, std::tuple<std::s
         for (const auto& [defaultValue, seqData] : map) {
             const auto& [name, sfxKey, seqType] = seqData;
             if (seqType == type) {
+                // Only save authentic sequence CVars
+                if (seqType == SEQ_FANFARE && defaultValue >= MAX_AUTHENTIC_SEQID) {
+                    continue;
+                }
                 const std::string cvarKey = "gSfxEditor_" + sfxKey;
                 CVar_SetS32(cvarKey.c_str(), defaultValue);
             }
         }
         SohImGui::RequestCvarSaveOnNextTick();
+        if (type == SEQ_BGM_WORLD) {
+            ReplayCurrentBGM();
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button(randomizeAllButton.c_str())) {
@@ -208,7 +237,8 @@ void Draw_SfxTab(const std::string& tabId, const std::map<u16, std::tuple<std::s
             const auto& [name, sfxKey, seqType] = seqData;
             const std::string cvarKey = "gSfxEditor_" + sfxKey;
             if (seqType & type) {
-                if (((seqType & SEQ_BGM_CUSTOM) || seqType == SEQ_FANFARE) && defaultValue > MAX_AUTHENTIC_SEQID) {
+                // Only save authentic sequence CVars
+                if (((seqType & SEQ_BGM_CUSTOM) || seqType == SEQ_FANFARE) && defaultValue >= MAX_AUTHENTIC_SEQID) {
                     continue;
                 }
                 const int randomValue = values.back();
@@ -217,6 +247,9 @@ void Draw_SfxTab(const std::string& tabId, const std::map<u16, std::tuple<std::s
             }
         }
         SohImGui::RequestCvarSaveOnNextTick();
+        if (type == SEQ_BGM_WORLD) {
+            ReplayCurrentBGM();
+        }
     }
 
     ImGui::BeginTable(tabId.c_str(), 3, ImGuiTableFlags_SizingFixedFit);
@@ -229,6 +262,7 @@ void Draw_SfxTab(const std::string& tabId, const std::map<u16, std::tuple<std::s
         if (~(seqType) & type) {
             continue;
         }
+        // Do not display custom sequences in the list
         if (((seqType & SEQ_BGM_CUSTOM) || seqType == SEQ_FANFARE) && defaultValue >= MAX_AUTHENTIC_SEQID) {
             continue;
         }
@@ -257,6 +291,7 @@ void Draw_SfxTab(const std::string& tabId, const std::map<u16, std::tuple<std::s
                 if (ImGui::Selectable(std::get<0>(seqData).c_str())) {
                     CVar_SetS32(cvarKey.c_str(), value);
                     SohImGui::RequestCvarSaveOnNextTick();
+                    UpdateCurrentBGM(defaultValue, type);
                 }
             }
 
@@ -293,18 +328,19 @@ void Draw_SfxTab(const std::string& tabId, const std::map<u16, std::tuple<std::s
         if (ImGui::Button(resetButton.c_str())) {
             CVar_SetS32(cvarKey.c_str(), defaultValue);
             SohImGui::RequestCvarSaveOnNextTick();
+            UpdateCurrentBGM(defaultValue, seqType);
         }
         ImGui::SameLine();
         ImGui::PushItemWidth(-FLT_MIN);
         if (ImGui::Button(randomizeButton.c_str())) {
+            auto it = map.begin();
             while (true) {
-                auto it = map.begin();
-                std::advance(it, rand() % map.size());
-                const auto& [value, seqData] = *it;
+                const auto& [value, seqData] = *std::next(it, rand() % map.size());
                 const auto& [name, sfxKey, seqType] = seqData;
                 if (seqType & type) {
                     CVar_SetS32(cvarKey.c_str(), value);
                     SohImGui::RequestCvarSaveOnNextTick();
+                    UpdateCurrentBGM(defaultValue, type);
                     break;
                 }
             }
@@ -322,7 +358,7 @@ extern "C" u16 SfxEditor_GetReplacementSeq(u16 seqId) {
             seqId = NA_BGM_FIELD_LOGIC;
         }
     }
-    
+
     if (sfxEditorSequenceMap.find(seqId) == sfxEditorSequenceMap.end()) {
         return seqId;
     }
@@ -424,7 +460,7 @@ void InitSfxEditor() {
 }
 
 extern "C" void SfxEditor_AddSequence(char *otrPath, uint16_t seqNum) {
-    std::vector<std::string> splitName = StringHelper::Split(otrPath, "/");
+    std::vector<std::string> splitName = StringHelper::Split(std::string(otrPath), "/");
     std::string fileName = splitName[splitName.size() - 1];
     std::vector<std::string> splitFileName = StringHelper::Split(fileName, "_");
     std::string sequenceName = splitFileName[0];
