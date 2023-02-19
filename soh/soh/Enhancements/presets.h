@@ -579,6 +579,8 @@ const std::vector<PresetEntry> randomizerPresetEntries = {
     PRESET_ENTRY_S32("gDampeWin", 1),
     // Skip Magic Arrow Equip Animation
     PRESET_ENTRY_S32("gSkipArrowAnimation", 1),
+    // Exit Market at Night
+    PRESET_ENTRY_S32("gMarketSneak", 1),
 
     // Equip arrows on multiple slots
     PRESET_ENTRY_S32("gSeparateArrows", 1),
@@ -599,8 +601,6 @@ const std::vector<PresetEntry> randomizerPresetEntries = {
 
     // Autosave
     PRESET_ENTRY_S32("gAutosave", 1),
-    // Allow the cursor to be on any slot
-    PRESET_ENTRY_S32("gPauseAnyCursor", 1),
 
     // Customize Fishing Behaviour
     PRESET_ENTRY_S32("gCustomizeFishing", 1),
